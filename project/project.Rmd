@@ -1,0 +1,703 @@
+---
+title: "Duke Music Library Circulation and Item Analysis"
+author: "Team TwoSquared - Radu Vasilescu, Merle Nye, Winston Yau, Eddy Lin"
+date: "2019-04-17"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+## Introduction
+
+This project will focus on a dataset consisting of materials circulation records from the Duke University Music Library.
+The Duke Music Library has a large collection of materials, consisting of musical scores, music literature and theory books,
+CDs, DVDs, microfilms, vinyl records, and others. The majority of materials are available to circulate among students, grad
+students, faculty members, and other members of the library. The central library circulation software, ALEPH, keeps records
+of every single circulation transaction (check-out, loans, returns, missing items, etc.), and historical data is available 
+for the past several years of activity.
+
+With this data, we hope to answer questions that will allow us to present recommendations to the music libraries to help them 
+make their transaction processes more efficient. We hope to explore the factors that predict transactions so that we may make 
+inferences about the data. One question might be what features are typical of the most commonly loaned publications. 
+We can also examine data such as the time it takes for publications on hold to be delivered to the holders to analyze the
+inefficiencies of the current system. These inefficiencies will allow us to offer our recommendations on the storage of items
+and processing of transactions to save the libraries time and money.
+
+We obtained the dataset using ARC, the library's reporting software, with permission and guidance from Dr. Jamie Keesecker,
+Laura Williams, John Little, and Karen Newbery. The data is sanitized and cleaned of any personally identifiable patron
+information, and is therefore safe and permissible to be used for this project.
+
+There are approximately 176,000 records in the transaction log in the time interval we selected (Jan 1, 2014 thru Jan 1, 2019),
+and each record represents one circulation transaction.
+
+**NOTE: Please make sure you have the latest version of packages installed.** Go to Tools > Check for Package Updates, and 
+install all of them. Especially make sure you are on `forcats` version `0.4.0` or higher, otherwise you'll encounter problems
+with `fct_collapse(..., group_other = TRUE)`.
+
+**NOTE2: We have decided to only perform 100 reps because of RStudioCloud's software limitation, and performing any number beyond 100 reps will crash the software. 
+
+```{r load-packages, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(lubridate)
+library(broom)
+library(forcats)
+library(infer)
+
+theme_set(theme_minimal())
+
+set.seed(13294)
+```
+
+```{r load-data, message=FALSE, warning=FALSE}
+music_circ <- read_csv("../data/music-circ.csv") %>% filter(`Event Year` < 2019)
+```
+
+```{r clean-data}
+music_circ <- music_circ %>%
+    rename(year = `Event Year`) %>%
+    rename(month = `Event Month`) %>%
+    rename(date = `Event Date`) %>%
+    rename(day = `Event Day`) %>%
+    rename(hour = `Event Hour`) %>%
+    rename(minute = `Event Minute`) %>%
+    rename(event_type = `Event Type Desc`) %>%
+    rename(sub_library = `Sub Library Desc`) %>%
+    rename(status_on_event = `Item Status Desc on Event`) %>%
+    rename(process_id = `Process Status ID`) %>%
+    rename(process_desc = `Process Status Desc`) %>%
+    rename(collection_id = `Collection ID`) %>%
+    rename(collection_desc = `Collection Desc`) %>%
+    rename(format = `Format Desc`) %>%
+    rename(barcode = Barcode) %>%
+    rename(title = Title) %>%
+    rename(topic = `Topic Name`) %>%
+    rename(language = `Language Desc`) %>%
+    rename(publisher = `Publisher`) %>%
+    rename(publication_date = `Publication Date`) %>%
+    rename(arrival_date = `Arrival Year and Month`) %>%
+    rename(patron_type = `Patron Type Desc`) %>%
+    rename(patron_status = `Patron Status Desc`)
+
+music_circ <- music_circ %>%
+    mutate(date = mdy_hm(date) %>% day()) %>%
+    mutate(date_time = make_datetime(year, month, date, hour, minute)) %>%
+    mutate(specific_date = make_date(year, month, date)) %>%
+    mutate(day = factor(day) %>% fct_relevel("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")) %>%
+    mutate(sub_library = fct_rev(factor(sub_library))) %>%
+    mutate(event_type = factor(event_type)) %>%
+    mutate(event_category = fct_collapse(event_type, 
+                                         return = c("Return", "Return of Item Not on Loan"),
+                                         loan = c("Simple Loan", "Transfer Loan"),
+                                         other = c("Batch Renewal", "Item Declared Lost", "Web Renewal"))) %>%
+    
+    mutate(status_on_event = factor(status_on_event)) %>%
+    mutate(process_id = factor(process_id)) %>%
+    mutate(process_desc = factor(process_desc)) %>%
+    mutate(collection_id = factor(collection_id)) %>%
+    mutate(collection_desc = factor(collection_desc)) %>%
+    mutate(collection_home = fct_collapse(collection_id,
+                                          music = c("PM", "PM2", "PM4", "PM9", "PMC", "PMF", "PML", "PMLF", "PMMC", "PMMCC", "PMMCM", "PMMCX",
+                                                    "PMMS", "PMR", "PMRC", "PMT", "PMV", "PMVX", "PMX"),
+                                          lsc = c("PSM", "PSMC", "PSMM", "PSMP", "PSMV"))) %>%
+    mutate(format = factor(format)) %>%
+    mutate(barcode = factor(barcode)) %>%
+    mutate(topic = factor(topic)) %>%
+    mutate(topic_category = fct_collapse(topic, 
+                                         music_lit = c("780-780.09Z: Literature on Music", 
+                                                   "780.2-780.6Z: Literature on Music", 
+                                                   "780.72-780.75Z: Literature on Music", 
+                                                   "780.78-780.79Z: Literature on Music", 
+                                                   "780.8-780.9Z: Literature on Music",
+                                                   "781.1-781.27Z: Literature on Music",
+                                                   "781.45-781.46Z: Literature on Music", 
+                                                   "781.8-781.9Z: Literature on Music",
+                                                   "784-784.09Z: Literature on Music", 
+                                                   "784.18-784.19Z: Literature on Music", 
+                                                   "789-789Z: Literature on Music",
+                                                   "ML0-ML9999Z: Literature on Music"),
+                                                   
+                                         music_instruction = c("780.1-780.1Z: Music Instruction & Study", 
+                                                               "780.7-780.71Z: Music Instruction & Study",
+                                                               "780.76-780.77Z: Music Instruction & Stud",
+                                                               "781-781.09Z: Music Instruction & Study",
+                                                               "781.28-781.29Z: Music Instruction & Stud", 
+                                                               "781.3-781.31Z: Music Instruction & Study",
+                                                               "781.33-781.39Z: Music Instruction & Stud", 
+                                                               "781.4-781.42Z: Music Instruction & Study",
+                                                               "MT0-MT9999Z: Music Instruction & Study"),
+                                         
+                                         music_instrumental = c("781.54-781.54Z: Instrumental Music",
+                                                                "781.554-781.554Z: Instrumental Music",
+                                                                "781.63-781.63Z: Instrumental Music",
+                                                                "781.65-781.65Z: Instrumental Music",
+                                                                "784.1-784.17Z: Instrumental Music",
+                                                                "784.2-784.9Z: Instrumental Music", 
+                                                                "785-788Z: Instrumental Music", 
+                                                                "M5-M1490Z: Instrumental Music"),
+                                         
+                                         music_vocal = c("781.59-781.59Z: Vocal Music", 
+                                                   "781.6-781.62Z: Vocal Music", 
+                                                   "781.64-781.64Z: Vocal Music", 
+                                                   "781.66-781.67Z: Vocal Music", 
+                                                   "781.7-781.7Z: Vocal Music", 
+                                                   "782-782.97Z: Vocal Music", 
+                                                   "783-783Z: Vocal Music",
+                                                   "M1495-M2199Z: Vocal Music"),
+                                         
+                                         music_gen = c("781.5-781.53Z: General Music",
+                                                       "781.56-781.58Z: General Music",
+                                                       "781.68-781.69Z: General Music",
+                                                       "M0-M4Z: General Music"),
+                                         group_other = TRUE)) %>%
+    mutate(language = factor(language)) %>%
+    mutate(publication_date = year(as_date(publication_date))) %>%
+    mutate(arrival_date = parse_date_time(arrival_date, "y m")) %>%
+    mutate(patron_type = factor(patron_type)) %>%
+    mutate(patron_category = fct_collapse(patron_type, 
+                                          faculty = c("Faculty - Emeritus", "Faculty - Music", "Faculty - Divinity", "Faculty - DUMC",
+                                                      "Faculty - Law", "Faculty - General", "Faculty - Fuqua", "Faculty - Visiting Faculty"),
+                                          
+                                          undergrad = c("Undergraduate"),
+                                          grad = c("Grad - BES", "Grad - Divinity", "Grad - DUMC", "Grad - Engineering & CompSci", 
+                                                   "Grad - Fuqua MBA", "Grad - Fuqua MMS", "Grad - Fuqua PhD", "Grad - Fuqua Weekend MBA",
+                                                   "Grad - General", "Grad - Law", "Grad - Marine Lab", "Grad - Math/Physics",
+                                                   "Grad - Religion"),
+                                          
+                                          #hospital = c("Hospital - Administrative/Clerical", "Hospital - Clinical/Technical", 
+                                          #             "Hospital - House Staff", "Hospital - Staff Nurse", "Hospital - Undefined"),
+                                          
+                                          #alumni = c("Other - Alumni", "Other - Fuqua Alumni", "Other - Law Alumni"),
+                                          
+                                          #public = c("Other - Durham Resident", "Other - Family", "Other - Friends of the Library", 
+                                          #           "Other - Guest", "Other - Retired Staff"),
+                                          
+                                          staff = c("Staff - BES", "Staff - Engineering & CompSci", "Staff - General", "Staff - Library Staff",
+                                                    "Staff - Math/Physics Staff"),
+                                          
+                                          group_other = TRUE)) %>%
+    mutate(patron_status = factor(patron_status)) %>%
+    select(date_time, specific_date, year, month, date, day, hour, minute,
+           sub_library, event_type, event_category, status_on_event, process_id, process_desc, collection_id, collection_desc,
+           format, barcode, ISBN, title, topic, topic_category, language, publication_date, arrival_date, patron_type, patron_category,
+           patron_status)
+```
+
+This is the current format of the dataset:
+
+```{r data-glimpse}
+music_circ %>% 
+    glimpse()
+```
+
+### Inventory Catalog
+
+From the circulation history data, we also built a catalog of all of the unique information about each item in the library.
+
+```{r create-catalog}
+music_cat <- data.frame(barcode = unique(music_circ$barcode))
+
+music_cat <- music_cat %>%
+    full_join((
+        music_circ %>%
+            group_by(barcode) %>%
+            arrange(desc(year)) %>%
+            distinct(barcode, .keep_all = TRUE)
+    ), by = "barcode") %>%
+    select(barcode, sub_library, process_id, process_desc, collection_id, collection_desc, format, ISBN, title, topic, 
+           topic_category, language, publication_date, arrival_date) %>%
+    distinct()
+
+music_cat %>% glimpse()
+```
+
+## Data Visualizations
+
+### Inventory Visualizations
+
+Here's a quick breakdown of the inventory size and distribution for the two different sub-libraries. For clarity, first, 
+here's a summary of the number of items of each type across the two libraries:
+
+```{r inventory-counts}
+music_cat %>%
+    group_by(sub_library, format) %>%
+    count()
+```
+
+And now, in graph form:
+
+```{r count-by-item-properties}
+music_cat %>%
+    ggplot(aes(x = sub_library, fill = format)) +
+        geom_bar(stat = "count", position = "stack") + 
+        labs(title = "Catalog/Inventory Breakdown",
+             x = "Sub-Library", y = "Count", fill = "Format")
+```
+
+### Circulation Visualizations
+
+Let's try plotting some visualizations about the inventory size across different types/formats of materials, and then looking
+at the amount of circulation activity for each type of material:
+
+```{r circ-vis}
+music_circ %>%
+    group_by(format, sub_library) %>%
+    summarize(count = n()) %>%
+    ggplot(aes(x = reorder(format, -count), y = count, fill = format)) + 
+
+        geom_bar(stat = "identity", position = "dodge") +
+        geom_bar(stat = "identity", position = "dodge2") +
+         facet_grid(sub_library ~ .) +
+        labs(title = "Circulation Activity by Item Format", x = "Format", y = "# of Transactions", fill = "Format")
+```
+
+The main players, obviously, are the `Books` and `Music` (sheet music) materials, making up the vast majority of circulation
+transactions in both the music library and the LSC.
+
+### Trends Over Time
+
+How has circulation changed over time? What trends can we see in the types of borrowers and their activity over the last
+few years? Here's a quick sketch using one point one per day and applying a smoothing to the curve:
+
+```{r detailed-time-trends, warning=FALSE}
+music_circ %>% 
+    drop_na(patron_category, specific_date, sub_library) %>%
+    group_by(patron_category, specific_date, sub_library) %>%
+    summarize(count = n()) %>%
+    ggplot(aes(x = specific_date, y = count, color = patron_category)) +
+        #geom_jitter(alpha = 0.03) +
+        geom_smooth(se = FALSE, span = 0.5, method = "loess") +
+        scale_y_log10() +
+        labs(title = "Activity over Time by Patron Category", subtitle = "in the Music Library and LSC",
+             x = "Year", y = "Transactions", color = "Patron Category",
+             shape = "Event Category")
+```
+
+### Activities by Time of Day
+
+The music library hires students to work behind the circulation desk, helping patrons and library staff manage the workload
+during the busy parts of the day. By analyzing patterns in activity over the course of the day, we may arrive at some useful
+conclusions that could help staff schedule workers more efficiently and effectively.
+
+*Note*: In this plot, the opening and closing times of the music library are marked by vertical blue lines.
+
+```{r time-of-day-vis, fig.width=12}
+music_circ %>%
+    ggplot(aes(x = hour * 60 + minute, y = event_category, color = event_type)) +
+        geom_jitter(alpha = 0.03) +
+        guides(colour = guide_legend(override.aes = list(alpha = 1))) +
+        geom_vline(xintercept = 9 * 60, color = "blue") +
+        geom_vline(xintercept = 22 * 60, color = "blue") +
+        labs(title = "Circulation Events by Time of Day",
+             x = "Minute", y = "Event Category", color = "Event Type")
+```
+
+
+## Optimizing the Library Service Center
+
+Books that must be retrieved and mailed from the LSC to the Music Library when requested are less efficient, as this
+process can take a few days. Perhaps, by implementing some sort of caching system based on temporal and/or spatial
+locality, we can optimize the retrieval time for materials by maximizing the "hit" rate in the on-campus library
+stacks. This is similar to the way a CPU core uses a heirarchy of caches (L1, L2, etc.) to increase performance when
+accessing values from RAM.
+
+Another way of thinking about it as using the library analogy itself: reaching for items that are far away is not as efficient as having a separate holding area that holds the most popular items that is easy to access.
+
+Since simulating and analyzing such a system would be very complicated and significantly beyond the scope of this project,
+we will approximate the stateful cache with a state-less, deterministic 1-time reorganization of materials. We'll generate
+two scenarios-- one in which items are arranged among the stacks and LSC as they currently are, and one in which items
+are rearranged according to the demand ranking system described above. Then, we'll run statistical simulations on these
+scenarios to determine if the optimized arrangement yields a statistically significant improvement in access time.
+
+### Predicting Demand of Items
+
+We are going to attempt to fit a model to estimate the demand of a given library item based on the following possible 
+variables:
+
+- `sub_library`: (deterministically related to `process_id` and `process_desc` variables) where the book currently is stored might have an impact on how likely an item is requested, as those who see the items in the stacks of the music library might decide to request the item. This variable is important for the simulation (later), but will not be directly used in the model.
+- `collection_id`: the library collection to which the item belongs
+- `format`: the format of the item (ex. `"Books"`, `"Music"`, etc.)
+- `topic_category`: a simplified categorization of general subject matter
+- `language`: the language of a book will probably influence its popularity; perhaps the most widely-spoken languages will be the most popular.
+
+First, we have to count the number of requests for each item in the catalog (our dependent variable):
+
+```{r calc-num-requests}
+loan_requests <- music_circ %>%
+    filter(event_category == "loan")
+
+num_requests <- loan_requests %>%
+    group_by(barcode) %>%
+    count()
+
+music_cat$num_requests <- left_join(music_cat, num_requests, by = "barcode")$n
+
+# make num_requests 0 for items that have not been requested
+music_cat$num_requests[is.na(music_cat$num_requests)] <- 0
+```
+
+Here's a histogram plot that shows the distribution of the number of times each item has been requsted:
+
+```{r num-requests-histogram}
+ggplot(music_cat, aes(x = num_requests)) +
+    geom_histogram(bins = 12) +
+    scale_x_log10() +
+    labs(title = "Distribution of Number of Loans Per Item",
+         x = "Number of Loans (log)", y = "Number of Items")
+```
+
+#### Linear Model
+
+First, we will fit the full model to the data. One of the considerations we have with the dataset is how to deal with NA values in the data. We know that fitting the model will automatically do a listwise deletion, removing the rows/observations from the data that contain NAs for the variables being used in the model.
+
+After removing those variables with significant missing values, we fit a linear model to try to predict the number of requests based on the item's information.
+
+```{r demand-pred-full-model}
+# Make a full model using relevant variables from `music_cat` only that predicts `num_requests` for a given item.
+music_cat_filtered <- music_cat %>%
+    filter(!is.na(collection_id),
+           !is.na(format),
+           !is.na(topic_category),
+           !is.na(publication_date),
+           !is.na(language))
+
+# Full model with the variables described above
+lm_num_request <- lm(num_requests ~ 
+                         collection_id +  
+                         format + 
+                         topic_category + 
+                         publication_date + 
+                         language, 
+                     data = music_cat_filtered)
+
+tidy(lm_num_request)
+glance(lm_num_request)
+
+```
+
+This linear model is not great, with an adjusted R-squared value of only `r glance(lm_num_request)$adj.r.squared`.
+
+Let's try to optimize the model using AIC-based backwards selection:
+
+```{r lm_num_request_model_selection}
+full_model_num_request <- step(lm_num_request, direction = "backward", trace=TRUE)
+
+glance(full_model_num_request)
+```
+This is our best model, with only variables `publication date`, `format`, `collection_id`, and `language` included in it, meaning that only these four variables have a significant impact on the number of loan requests.
+
+
+The best model's final R-squared value is `r  glance(full_model_num_request)$r.squared`.
+
+```{r best-model-var}
+best_model <- full_model_num_request
+tidy(best_model)
+```
+
+### Evaluate LSC/Stacks Performance
+
+Now, we are going to run a simulation to determine the existing performance/efficiency of the system.
+
+To do this, we are going to use a bootstrap simulation to find the proportion of requests that found books in the Stacks
+rather than in the LSC-- the "hit rate".
+
+```{r existing-hit-rate}
+existing_null_dist <- music_circ %>%
+    filter(event_category == "loan") %>%
+    specify(response = sub_library, success = "Music Library") %>% 
+    generate(reps = 100, type = "bootstrap") %>% 
+    calculate(stat = "prop")
+```
+
+```{r plot-existing-null}
+ggplot(data = existing_null_dist, mapping = aes(x = stat)) +
+    geom_histogram(bins = 20) +
+    labs(title = "Existing Catalog Bootstrap Distribution")
+```
+
+The median value produced by this bootstrap simulation is `r median(existing_null_dist$stat)`. This value represents
+the expected proportion of requests that constitute a "hit"-- the requested item can be found in the Stacks, and does 
+not need to be shipped from the LSC.
+
+Now, we are going to try to increase this by using our model to re-arrange the items between the stacks and the LSC to try
+achieve a higher hit rate.
+
+### Optimize the LSC/Stacks Distribution
+
+First, we have to get the predicted number of requests (demand) of each item using the model we created and optimized
+above.
+
+```{r get-predicted-num-requests}
+mus_cat_predicted <- music_cat_filtered
+
+mus_cat_predicted$predicted_num_requests <- predict.lm(best_model, newdata = music_cat_filtered) %>%
+    lapply(round) %>% unlist()
+
+mus_cat_predicted %>%
+    select(barcode, num_requests, predicted_num_requests) %>%
+    head(10)
+```
+
+Let's make a visualization to test the accuracy of these predictions:
+
+```{r predictions-vs-actual-vis}
+ggplot(mus_cat_predicted, aes(x = abs(predicted_num_requests - num_requests))) +
+    geom_histogram(bins = 50) +
+    scale_y_log10() + 
+    labs(title = "Distribution of Errors",
+         subtitle = "Difference between predicted and real value",
+         x = "Difference", y = "Count (log scale)")
+```
+In the graph, the differences in values between the predicted and actual values are mostly very small for the majority of oru predictions, and there is a steep decrease in the number of predictions once the difference in values got larger.
+
+Now, we have to use the predicted value to create a new distribution of items between the stacks and the LSC. To do this,
+we'll first sort the predicted catalog by `predicted_num_requests`, and then assign the `sub_library` of the first *n*
+items to be `"Music Library"`, and the rest to be `"Library Service Center"`, where *n* corresponds to the proportion of
+catalog items that were originally in the Music Library (to maintain the same proportion across locations).
+
+```{r redistribute-items}
+mus_lib_size <- music_cat %>%
+    filter(sub_library == "Music Library") %>%
+    count() %>% pull()
+
+lsc_size <- music_cat %>%
+    filter(sub_library == "Library Service Center") %>%
+    count() %>% pull()
+
+mus_lib_prop <- mus_lib_size / (mus_lib_size + lsc_size)
+
+# The model has to filter out NA values, so the new catalog will be somewhat smaller. However,
+# we still need to maintain the proportions.
+new_mus_lib_size <- round(mus_lib_prop * nrow(mus_cat_predicted))
+new_lsc_size <- nrow(mus_cat_predicted) - new_mus_lib_size
+
+mus_cat_redistr <- mus_cat_predicted %>%
+    arrange(desc(predicted_num_requests))
+
+mus_cat_redistr$sub_library <- c(
+    rep("Music Library", new_mus_lib_size),
+    rep("Library Service Center", new_lsc_size)
+)
+
+# Find out how many items were moved
+num_items_moved <- full_join(music_cat_filtered, mus_cat_redistr, by = "barcode") %>%
+    filter(sub_library.x != sub_library.y) %>%
+    count() %>% pull()
+```
+
+We also have to create a new `music_circ` dataframe to hold the loan requests etc., but with the newly assigned `sub_library`
+values. We'll make sure to filter out all of the `NA`-containing values from this as well.
+
+```{r new-music-circ}
+music_circ_filtered <- music_circ %>%
+    filter(!is.na(collection_id),
+           !is.na(format),
+           !is.na(topic_category),
+           !is.na(publication_date),
+           !is.na(language)) 
+
+circ_barcode_sub <- music_circ_filtered %>% select(barcode)
+new_circ_sub_library <- full_join(circ_barcode_sub, mus_cat_redistr, by = "barcode") %>% select(sub_library)
+
+music_circ_new <- music_circ_filtered
+music_circ_new$sub_library = new_circ_sub_library$sub_library
+```
+
+### Evaluate Optimized LSC/Stacks Performance
+
+Now, we'll use the same process from before, to evaluate the performance/efficiency of this newly distributed catalog.
+
+```{r new-hit-rate}
+new_null_dist <- music_circ_new %>%
+    filter(event_category == "loan") %>%
+    specify(response = sub_library, success = "Music Library") %>% 
+    generate(reps = 100, type = "bootstrap") %>% 
+    calculate(stat = "prop")
+```
+
+```{r plot-new-null}
+ggplot(data = new_null_dist, mapping = aes(x = stat)) +
+    geom_histogram(bins = 20) +
+    labs(title = "New Catalog Bootstrap Distribution")
+```
+
+The new median hit rate using the re-distributed catalog is `r new_null_dist$stat %>% median()`.
+
+### Comparing Original vs. Optimized Performance
+
+First, we can see how the new organization of the libraries' items performed compared to the existing organization. 
+We can plot the hit rates of each one on a bar plot.
+
+```{r visualize-new-vs-existing}
+existing_vs_new <- data.frame(organization=c("Existing", "New"),
+                hit_rate=c(median(existing_null_dist$stat), median(new_null_dist$stat)))
+
+existing_vs_new %>% ggplot(aes(x=organization, y=(hit_rate)*100, fill=organization)) + 
+    geom_bar(stat="identity") + 
+    coord_flip() + 
+    theme(legend.position="None") + 
+    ylim(0, 100) + 
+    labs(x="Organization of Items", 
+         y="Hit Rate in %", 
+         title="Comparison of Hit Rate between Existing and New Organization of Items")
+```
+
+
+Now, we have to formally compare the performance of the original library assignment versus our optimized assignment 
+strategy. To do this, we will run a hypothesis test:
+
+- H<sub>0</sub>: Hit-rate(optimized) == Hit-rate(original) - There is no change.
+- H<sub>A</sub>: Hit-rate(optimized) > Hit-rate(original) - The optimized version has a higher hit rate.
+
+This is an independence test, so we will use an `"independence"` hypothesis with the `"permute"` method, and calculate
+the `"diff in props"` stat.
+
+*Note*: We must also group the two circulation logs into one data frame, with a new variable representing whether or not
+that transaction was optimized by our model.
+
+First, we have to determine the observed difference in proportions between the optimized and un-optimized catalogues:
+
+```{r observed-diff-in-props}
+num_hit_unopt <- music_circ %>%
+    filter(sub_library == "Music Library") %>%
+    count() %>% pull()
+
+prop_hit_unopt <- num_hit_unopt / nrow(music_circ)
+
+num_hit_opt <- music_circ_new %>%
+    filter(sub_library == "Music Library") %>%
+    count() %>% pull()
+
+prop_hit_opt <- num_hit_opt / nrow(music_circ_new)
+
+observed_diff <- prop_hit_opt - prop_hit_unopt
+
+observed_diff
+```
+
+Now, we can run the simulation.
+
+```{r hypothesis-test, warning = FALSE}
+# Combine data frames
+circ_combined <- bind_rows(list(music_circ_filtered, music_circ_new), .id = "optimized") %>%
+    filter(event_category == "loan") %>%
+    mutate(optimized = if_else(optimized == 1, "no", "yes")) %>%
+    mutate(optimized = factor(optimized))
+
+hyp_null_dist <- circ_combined %>%
+    specify(response = sub_library, explanatory = optimized, 
+            success = "Music Library") %>%
+    hypothesize(null = "independence") %>%
+    generate(100, type = "permute") %>%
+    calculate(stat = "diff in props", 
+            order = c("yes", "no"))
+```
+
+Let's visualize the resulting null distribution, with a vertical line representing the observed difference in proportions:
+
+```{r hyp-null-dist}
+ggplot(hyp_null_dist, aes(x = stat)) +
+    geom_histogram(binwidth = 0.001) +
+    geom_vline(xintercept = observed_diff, color = "blue") +
+    labs(title = "Null Distribution",
+         subtitle = "Difference in Proportions between Optimized and Unoptimized Catalogues",
+         x = "Difference in Proportions", y = "Count")
+```
+
+We can then calculate our p-value as the probability that the observed difference in hit rates occurred by chance:
+
+```{r hyp-p-value}
+p_value <- hyp_null_dist %>%
+    filter(stat >= observed_diff) %>%
+    summarise(p_value = n() / nrow(hyp_null_dist)) %>%
+    pull()
+
+p_value
+```
+
+Since our P-value is `r p_value`, which is less than 0.05, we can reject the null hypothesis. This means that there is 
+very likely a significant increase in the "hit"-proportion of our optimized catalog when compared to the existing baseline
+catalog.
+
+## Conclusion
+
+### Motivation and Relevance
+
+The initial motivation for this project was from one of the group member’s (Radu’s) experience working at the music library. 
+He recognized some inefficiencies in the process during his work there  and wanted to employ data analysis of the detailed 
+library transaction and catalog records to optimize the system. Overall, our goal was to construct a model to save patrons' 
+valuable time and the library money for loan requests, an essential service provided by the library. During our analysis, 
+we built a model that achieved these goals.
+
+### Results
+
+As our P value in the above test illustrates, our model for material placement in the library performs significantly 
+more efficiently than the current system. According to our simulation, the optimized catalogue preforms 12.8% more 
+efficiently. This means that if implemented, 12.8% more patrons who currently request items from the library will have 
+their items readily available and forgo the three-day wait associated with retrieving items from the library service center.
+
+From the libraries’ perspective, this efficiency gain represents huge cost-saving potential. There were 33,296 loan 
+requests in 2018. According to our simulation, that means about 4,994 items had to be brought from the library service 
+center. The director of the library estimates that each item costs about a dollar to ship from the Library Service Center 
+to the music library when it’s requested due to costs associated with driver wage, gas, and vehicle costs. Given that 
+estimate, the library spends around $4,994 per year on retrieving books from the LSC. If the library were to use our 
+model, they would only need to spend about $2,664 per year to transport requested materials. 
+
+The one-time redistribution of items would also be a sizeable cost, but it would be weighed out by the future savings. Since
+our model suggest moving about `r num_items_moved` items, at $0.50 per item that would mean a one-time cost of about
+$`r num_items_moved * 0.5`. Let's see how that would look over several years:
+
+```{r cost-benefit-plot, fig.width=10}
+# Define functions to represent cost
+fn_original <- function(x) x * 4994
+fn_optimized <- function(x) (num_items_moved * 0.5) + x * 2664
+
+ggplot(data = data.frame(x = 0), mapping = aes(x = x)) +
+    stat_function(
+          fun = fn_original,
+          mapping = aes(color = "red")
+      ) +
+    stat_function(
+          fun = fn_optimized,
+          mapping = aes(color = "green")
+      ) +
+    scale_x_continuous(limits = c(0, 5.2)) +
+    scale_color_manual(name = "Functions",
+                       values = c("red", "green"), # Color specification
+                       labels = c("Unoptimized (y = x * 4994)", 
+                                  "Optimized (y = num_items_moved * 0.5 + x * 2664)")) +
+    annotate(geom = "point", x = 1.25, y = fn_original(1.25)) +
+    annotate(geom = "text", x = 1.25, y = fn_original(1.25) + 1500, label = "Break Even") +
+    annotate(geom = "segment", x = 5, xend = 5, y = fn_original(5), yend = fn_optimized(5), 
+             color = "skyblue", size = 1.5) +
+    annotate(geom = "text", x = 4.5, y = 20000, label = str_interp("Diff = $${fn_original(5) - fn_optimized(5)}")) +
+    labs(title = "Cost-Benefit Analysis",
+         subtitle = "Unoptimized vs Optimized Library Model",
+         x = "Years", y = "Cost ($)")
+```
+
+As we can see from this visualization, performing the one-time redistribution of items according to our model would result
+in positive savings after a little over 1 year. After 5 years, the optimized library would have saved about
+$`r fn_original(5) - fn_optimized(5)` compared to the unoptimized system.
+
+Thus, we have shown how the music library stands to benefit both financially and through increased efficiency by using 
+our model to reorganize the distribution of their catalogue.
+
+### Future Improvement
+
+The linear model used in this project was not extremely accurate. If we were to do this project again, we would probably
+try to research other ways of creating a more accurate model for the data, perhaps using a more advanced type of regression
+or some kind of machine learning technique.
+
+In addition, in future iterations of the project, we would perform a k-fold cross validation to analyze the variance of the 
+model, or how it responds to new data (and not just bias, or how well it fits training data). We'd need a more clearly 
+defined policy for dealing with missing values, since we had to remove about 10,000 items that had missing bibliographical
+information used in our model.
+
+Another area of improvement could definitely be using a more accurate dataset for the catalog of items. Since we built the 
+catalog by just looking at unique barcodes from the circulation log, the catalog that we have only includes items that were
+requested at least once in the four-year period. In reality, according to our source at the music library, the Library
+Service Center holds over 100,000 music-related materials, and the library's stacks hold about 80,000 materials on-site.
+A more complete catalog would allow us to be more accurate in the distribution of items among the two sites by giving us
+an accurate value for the proportion of items in each location.
